@@ -1,0 +1,71 @@
+---
+title: "kmers"
+output: html_document
+date: '2022-09-21'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(ggplot2)
+library(reshape2)
+```
+
+```{r}
+props <- read_tsv("aa_property_table.txt")
+aas <- props$amino_acid
+
+props.1 <- props %>%
+  mutate(aa = amino_acid) %>%
+  select(-amino_acid) %>%
+  melt()
+```
+
+```{r}
+all.kmers <- tibble(aa1 = aas) %>% 
+  merge(tibble(aa2 = aas)) %>% 
+  merge(tibble(aa3 = aas)) %>%
+  mutate(kmer = paste0(aa1, aa2, aa3)) %>%
+  melt(id = "kmer", value.name = "aa") %>%
+  mutate(pos = substr(variable, 3, 3)) %>%
+  select(-variable)
+```
+
+```{r}
+all.kmer.pros <- all.kmers %>%
+  merge(props.1)
+```
+
+```{r}
+all.kmer.pros.1 <- all.kmer.pros %>%
+  dcast(kmer ~ variable, value.var = "value", fun.aggregate = sum)
+```
+
+```{r}
+all.kmer.pros.2 <- all.kmer.pros.1 %>%
+  select(-kmer)
+all.kmer.pros.2 <- as.matrix(all.kmer.pros.2)
+rownames(all.kmer.pros.2) <- all.kmer.pros.1$kmer
+
+clust <- hclust(dist(all.kmer.pros.2))
+```
+
+
+```{r}
+# epitope cdr3 pos kmer
+
+# epitope cdr3 pos cluster
+
+# epitope cluster
+```
+
+```{r}
+plot(clust)
+
+cutree(clust, 10)
+```
+
+```{r}
+p(kmer, epitope)
+```

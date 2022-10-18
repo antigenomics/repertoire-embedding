@@ -1,0 +1,90 @@
+---
+title: "annotate"
+output:
+  pdf_document: default
+  html_document: default
+date: '2022-10-17'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(stringdist)
+library(reshape2)
+```
+
+Load data
+
+```{r}
+data <- read_tsv("sample.txt.gz")
+database <- read_tsv("database.txt.gz")
+```
+Data structure is better be kept the way specified below
+
+```{r}
+glimpse(data)
+glimpse(database)
+```
+
+Compute distances between strings
+
+```{r}
+get_distances <- function(aa.seq.1, aa.seq.2, threshold = 1,
+                          method = "hamming", ...) {
+  stringdistmatrix(unique(aa.seq.1), unique(aa.seq.2), 
+                   method = method,
+                   useNames = T, ...) %>%
+    melt %>%
+    filter(value <= threshold) %>%
+    rename(aa.seq = Var1, aa.seq.db = Var2, dist = value) %>%
+    mutate(aa.seq = as.character(aa.seq), aa.seq.db = as.character(aa.seq.db))
+}
+
+with(database, get_distances(aa.seq.db, aa.seq.db)) %>% head
+```
+
+An optimized routine that splits by length and processes in chunks(hamming only)
+
+```{r}
+get_1mm_pairs <- function(aa.seq, aa.seq.db, chunks = 64) {
+  d <- tibble(aa.seq = unique(aa.seq)) %>%
+    mutate(len = nchar(aa.seq),
+           chunk.id = rep(1:chunks, length.out = length(unique(aa.seq))))
+  
+  db <- tibble(aa.seq.db = unique(aa.seq.db)) %>%
+    mutate(len.db = nchar(aa.seq.db)) 
+  
+  d %>%
+    group_by(chunk.id, len) %>%
+    group_modify(~ get_distances(.x$aa.seq, db %>% 
+                                   filter(len.db == .y$len) %>%
+                                   .$aa.seq.db))
+}
+
+with(database, get_1mm_pairs(aa.seq.db, aa.seq.db)) %>% head
+```
+
+Now the general routine for tables in original format. Sample table should come 
+first, database should come second.
+
+```{r}  
+get_1mm_annot <- function(d, db) {
+  pairs <- get_1mm_pairs(d$aa.seq, db$aa.seq.db) %>% 
+    inner_join(db)
+  d %>%
+    left_join(pairs) %>%
+    select(-chunk.id, -len)
+}
+
+get_1mm_annot(data %>% head(100000), database) %>%
+  filter(!is.na(epitope)) %>% head
+```
+
+Compute final table
+
+```{r}
+system.time({data.ann <- get_1mm_annot(data, database)})
+glimpse(data.ann)
+```
+
+
