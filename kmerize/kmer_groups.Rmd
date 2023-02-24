@@ -10,7 +10,17 @@ knitr::opts_chunk$set(echo = TRUE)
 library(tidyverse)
 library(ggplot2)
 library(reshape2)
+library(data.table)
+library(parallel)
 ```
+
+### K-mer clustering
+
+We will now cluster all k-mers $\kappa \in \mathcal K$. Load amino acid 
+properties so we can do $\kappa \rightarrow \vec x$ - we'll use them for 
+clustering. Otherwise need smth like BLOSUM pairwise scores 
+$\kappa_1,\kappa_2 \rightarrow d_{12}$. And storing (dense) $d_{12}$ matrix is 
+a lot of space even for $k=3$.
 
 ```{r}
 props <- read_tsv("aa_property_table.txt")
@@ -22,6 +32,8 @@ props.1 <- props %>%
   melt()
 ```
 
+Dirty script to make the set of all k-mers
+
 ```{r}
 all.kmers <- tibble(aa1 = aas) %>% 
   merge(tibble(aa2 = aas)) %>% 
@@ -32,15 +44,17 @@ all.kmers <- tibble(aa1 = aas) %>%
   select(-variable)
 ```
 
+Append AA props
+
 ```{r}
 all.kmer.pros <- all.kmers %>%
   merge(props.1)
-```
 
-```{r}
 all.kmer.pros.1 <- all.kmer.pros %>%
   dcast(kmer ~ variable, value.var = "value", fun.aggregate = sum)
 ```
+
+Transform to matrix $\kappa \times f$ with $f=10$ features
 
 ```{r}
 all.kmer.pros.2 <- all.kmer.pros.1 %>%
@@ -51,21 +65,35 @@ rownames(all.kmer.pros.2) <- all.kmer.pros.1$kmer
 clust <- hclust(dist(all.kmer.pros.2))
 ```
 
+Draw dendrogram and cluster into $10$ clusters
 
 ```{r}
-# epitope cdr3 pos kmer
-
-# epitope cdr3 pos cluster
-
-# epitope cluster
+plot(clust) # TODO: more fancy dendro, perhaps with circle
+clusters <- cutree(clust, 10)
 ```
 
-```{r}
-plot(clust)
+### k-merization procedure
 
-cutree(clust, 10)
-```
+Optimized routines for k-merization of CDR3s
 
 ```{r}
-p(kmer, epitope)
+K = 3
+CORES = 8
+
+cdr3_to_kmers <- function(cdr3, k = K) {
+  pos <- 1:(nchar(cdr3) - k + 1)
+  kmer <- sapply(pos, function(x) substr(cdr3, x, x + k - 1))
+  data.table(cdr3, pos, kmer)
+}
+cdr3_to_kmers("CASSLAPGATNEKLFF")
+
+cdr3s_to_kmers <- function(cdr3s, k = K, cores = CORES) {
+  cdr3s[nchar(cdr3s) >= k] %>%
+    as.list() %>%
+    mclapply(function(x) cdr3_to_kmers(x, k), 
+             mc.set.seed = 42, 
+             mc.cores = cores) %>%
+    rbindlist
+}
+cdr3s_to_kmers(c("CASSLAPGATNEKLFF", "CGGGF", "CF", "CAAAAAAAAAAAF", "CGGGGGF"))
 ```
