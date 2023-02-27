@@ -13,6 +13,8 @@ library(stringdist)
 library(reshape2)
 ```
 
+### With stringdist
+
 Load data
 
 ```{r}
@@ -85,6 +87,22 @@ Compute final table
 ```{r}
 system.time({data.ann <- get_1mm_annot(data, database)})
 glimpse(data.ann)
+```
+
+### With dictionary
+
+```{r}
+cdr3_1mm <- function(cdr3s) {
+  strsplit(cdr3s, "") %>%
+    lapply(function(x) {
+      (0:length(x)) %>% sapply(function(pos) { # 0 for correct variant
+        x[pos] <- "X"
+        paste0(x, collapse = "")
+      })
+    })
+}
+
+cdr3_1mm("ATGC")
 ```
 
 

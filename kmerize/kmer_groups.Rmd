@@ -19,8 +19,8 @@ library(parallel)
 We will now cluster all k-mers $\kappa \in \mathcal K$. Load amino acid 
 properties so we can do $\kappa \rightarrow \vec x$ - we'll use them for 
 clustering. Otherwise need smth like BLOSUM pairwise scores 
-$\kappa_1,\kappa_2 \rightarrow d_{12}$. And storing (dense) $d_{12}$ matrix is 
-a lot of space even for $k=3$.
+$\kappa_1,\kappa_2 \rightarrow d_{12}$. And storing (dense) $d_{12}$ matrix 
+takes lots of space even for $k=3$.
 
 ```{r}
 props <- read_tsv("aa_property_table.txt")
@@ -72,22 +72,34 @@ plot(clust) # TODO: more fancy dendro, perhaps with circle
 clusters <- cutree(clust, 10)
 ```
 
-### k-merization procedure
+### K-merization procedure
 
 Optimized routines for k-merization of CDR3s
 
 ```{r}
-K = 3
+KMER_SZ = 3
 CORES = 8
 
-cdr3_to_kmers <- function(cdr3, k = K) {
+cdr3_to_kmers <- function(cdr3, k = KMER_SZ) {
   pos <- 1:(nchar(cdr3) - k + 1)
   kmer <- sapply(pos, function(x) substr(cdr3, x, x + k - 1))
   data.table(cdr3, pos, kmer)
 }
 cdr3_to_kmers("CASSLAPGATNEKLFF")
 
-cdr3s_to_kmers <- function(cdr3s, k = K, cores = CORES) {
+cdr3_to_kmers_gap <- function(cdr3, k = KMER_SZ) {
+  pos <- 1:(nchar(cdr3) - k + 1)
+  
+  k_mid <- round(k / 2)
+  kmer <- sapply(pos, function(x) paste0(substr(cdr3, x, x + k_mid - 1),
+                                         "X", 
+                                         substr(cdr3, x + k_mid + 1, x + k - 1),
+                                         collapse = ""))
+  data.table(cdr3, pos, kmer)
+}
+cdr3_to_kmers_gap("CASSLAPGATNEKLFF", 5)
+
+cdr3s_to_kmers <- function(cdr3s, k = KMER_SZ, cores = CORES) {
   cdr3s[nchar(cdr3s) >= k] %>%
     as.list() %>%
     mclapply(function(x) cdr3_to_kmers(x, k), 
