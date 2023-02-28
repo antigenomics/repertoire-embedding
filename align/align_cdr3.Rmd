@@ -1,0 +1,151 @@
+---
+title: "CDR alignment"
+author: "M.S."
+date: '2023-02-28'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(data.table)
+library(dtplyr)
+library(stringr)
+```
+
+```{r}
+#
+get_gap <- function(gap_len) {
+  pmax(gap_len, 0) %>%
+    sapply(function(g)
+      str_c(rep("-", g), collapse = "")
+    )
+}
+get_gap(5)
+get_gap(c(-1, 5))
+
+# gap_pos - after what aa to put gap
+# gap_pos < 0 - will count from end to start
+add_gap <- function(cdr3, gap_pos, gap_len) {
+  if (length(cdr3) != 1) {
+    if (length(gap_pos) != length(cdr3)) {
+      if (length(gap_pos) != 1) {
+        stop("Bad gap positions vector size")
+      }
+    }
+    if (length(gap_len) != length(cdr3)) {
+      if (length(gap_len) != 1) {
+        stop("Bad gap lengths vector size")
+      }
+    }
+  }
+  
+  len <- nchar(cdr3)
+  
+  if (gap_pos < 0) {
+    gap_pos <- len + gap_pos
+  }
+  
+  str_c(substr(cdr3, 1, gap_pos),
+        get_gap(gap_len),
+        substr(cdr3, gap_pos + 1, len))
+}
+add_gap(c("CASSLAPGAT", "CASSL", "C"), 3, 3)
+add_gap(c("CASSLAPGAT", "CASSL", "C"), -4, 2)
+
+MY_GAP_POS <- c(3, -4)
+# pad with '-' to smallest ones
+pad_cdr3 <- function(cdr3.x, cdr3.y, gap_pos = MY_GAP_POS) {
+  if ((length(cdr3.x) != length(cdr3.y)) &
+      (length(cdr3.x) != 1 & length(cdr3.y) != 1)) {
+    stop("CDR3 vector sizes don't match")
+  }
+  
+  delta <- nchar(cdr3.x) - nchar(cdr3.y)
+  names(gap_pos) <- gap_pos
+  gap_pos %>%
+    as.list() %>%
+    lapply(function(g)
+      data.table(
+        cdr3.x = add_gap(cdr3.x, g, -delta),
+        cdr3.y = add_gap(cdr3.y, g, delta)
+      )) %>%
+    rbindlist(idcol = "gap_pos")
+}
+pad_cdr3(c("CASSLAPGAT", "CASLAPGAAAAATNEKLFF", "C"), 
+         rev(c("CASSLAGAT", "CASLAPGATTNEKLFF", "CA")))
+pad_cdr3("CASLAPGAAAAATNEKLFF", 
+         rev(c("CASSLAGAT", "CASLAPGATTNEKLFF", "CA")))
+
+# flatten CDR3 to table of amino acids and their positions
+flatten_cdr3 <- function(cdr3) {
+  lst <- strsplit(cdr3, "")
+  names(lst) <- cdr3
+  lst %>%
+    lapply(function(x) {
+      data.table(aa = x, pos = 1:length(x))
+    }) %>%
+    rbindlist(idcol = "cdr3")
+}
+flatten_cdr3("CASSLAPGAT")
+flatten_cdr3(c("CASSLAPGAT", "NEKLFF"))
+
+
+# complement two CDR3 sequences with all specified gap positions
+align_cdr3 <- function(cdr3.x, cdr3.y, gap_pos = MY_GAP_POS) {
+  padded <- pad_cdr3(cdr3.x, cdr3.y)
+  
+  cbind(gap_pos = with(padded, rep(gap_pos, nchar(cdr3.x))),
+        flatten_cdr3(padded$cdr3.x)[, .(cdr3p.x = cdr3, 
+                                 aa.x = aa)],
+        flatten_cdr3(padded$cdr3.y)[, .(cdr3p.y = cdr3, 
+                                 aa.y = aa,
+                                 pos = pos)])
+}
+align_cdr3(c("CCCCCCCCCCC"), 
+           rev(c("CASSLAGATGW", "CASLAPGATTNEKLFF", "CANEVKLFF")))
+align_cdr3(c("CASSLAPGATW", "CASLAPGAAAAATNEKLFF", "CASSGILF"), 
+           rev(c("CASSLAGATGW", "CASLAPGATTNEKLFF", "CANEVKLFF")))
+
+AA_VALUES <- c("A", "R", "N", "D", "C",
+               "Q", "E", "G", "H", "I",
+               "L", "K", "M", "F", "P",
+               "S", "T", "W", "Y", "V")
+#
+init_scoring <- function(m = "PAM70", f = 10, g = -5) {
+  read_tsv("../assets/aln_matrices.txt") %>%
+    filter(mat == m, 
+           aa.x %in% AA_VALUES,
+           aa.y %in% AA_VALUES) %>%
+    select(-mat) %>%
+    rbind(tibble(aa.x = AA_VALUES, aa.y = "-", score = g),
+          tibble(aa.x = "-", aa.y = AA_VALUES, score = g),
+          tibble(aa.y = "-", aa.x = "-", score = 0)) %>%
+    mutate(score = score / f) %>%
+    group_by(aa.x) %>%
+    mutate(score.x = score[which(aa.x == aa.y)]) %>%
+    group_by(aa.y) %>%
+    mutate(score.y = score[which(aa.x == aa.y)]) %>%
+    ungroup() %>%
+    as.data.table()
+}
+init_scoring()
+MY_SCORING <- init_scoring()
+
+#
+align_and_score_cdr3 <- function(cdr3.x, cdr3.y, 
+                                 gap_pos = MY_GAP_POS,
+                                 scoring = MY_SCORING) {
+  align_cdr3(cdr3.x, cdr3.y, gap_pos) %>%
+    left_join(scoring) %>%
+    group_by(gap_pos, cdr3p.x, cdr3p.y) %>%
+    summarise(score = sum(score - pmax(score.x, score.y))) %>%
+    ungroup() %>%
+    mutate(cdr3.x = gsub("-", "", cdr3p.x),
+           cdr3.y = gsub("-", "", cdr3p.y)) %>%
+    group_by(cdr3.x, cdr3.y) %>%
+    mutate(best_aln = score == max(score))
+}
+align_and_score_cdr3(c("CASSLAPGATW", "CASLAPGAAAAATNEKLFF", "CASSGILF"), 
+           rev(c("CASSLAGATGW", "CASLAPGATTNEKLFF", "CANEVKLFF")))
+```

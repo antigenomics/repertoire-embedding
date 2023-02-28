@@ -13,20 +13,21 @@ library(stringdist)
 library(reshape2)
 ```
 
-### With stringdist
-
 Load data
 
 ```{r}
 data <- read_tsv("sample.txt.gz")
 database <- read_tsv("database.txt.gz")
 ```
+
 Data structure is better be kept the way specified below
 
 ```{r}
 glimpse(data)
 glimpse(database)
 ```
+
+### With stringdist
 
 Compute distances between strings
 

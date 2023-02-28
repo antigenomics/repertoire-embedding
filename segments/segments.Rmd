@@ -1,0 +1,228 @@
+---
+title: "Untitled"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(Biostrings)
+library(parallel)
+library(data.table)
+library(dplyr)
+library(reshape2)
+library(stringr)
+library(scales)
+library(ggplot2)
+library(RColorBrewer)
+select = dplyr::select 
+```
+
+Load V segments
+
+```{r}
+df.v <- fread("segm/251117.cdr12.txt") %>%
+  filter(grepl("*", seqaa, fixed = T) == F) %>%
+  mutate(segment = "V", id = gene, gene = substr(gene, 1, 3)) %>%
+  select(segment, species, gene, id, seqaa, cdr1aa, cdr2aa) %>%
+  filter(gene %in% c("TRA", "TRB")) %>%
+  mutate(seqaa = gsub("C[^C]*$", "", seqaa)) # trim last C and V CDR3
+
+df.v <- df.v %>% 
+  mutate(region = "full") %>% 
+  select(-cdr1aa, -cdr2aa) %>%
+  rbind(df.v %>% 
+          mutate(region = "cdr1", seqaa = cdr1aa) %>% 
+          select(-cdr1aa, -cdr2aa)) %>%
+  rbind(df.v %>% 
+          mutate(region = "cdr2", seqaa = cdr2aa) %>% 
+          select(-cdr1aa, -cdr2aa))
+```
+
+Load J segments, translate after reference point, concat with corresponding 
+
+```{r}
+df.j <- fread("segm/joining.txt") %>%
+  as.data.frame %>%
+  mutate(region = "full", segment = "J", id = gene, gene = substr(gene, 1, 3),
+         seqnt = substr(seq, reference_point + 2, nchar(seq)),
+         seqaa = seqnt %>% 
+           lapply(function(x) as.character(translate(DNAString(x)))) %>% unlist,
+         c.id = ifelse(gene == "TRA", 
+                       "TRAC", 
+                       paste0("TRBC", substr(id, 5, 5)))) %>%
+  select(region, segment, species, gene, id, seqaa, c.id) %>%
+  merge(fread("segm/constant.txt")) %>%
+  mutate(seqaa = paste0(seqaa, c.seq)) %>%
+  select(-c.id, -c.seq)
+
+df.segm <- rbind(df.v, df.j)
+```
+All combinations
+
+```{r}
+df.segm.comb <- df.segm %>% 
+  mutate(id.1 = id, seqaa.1 = seqaa) %>% 
+  select(-id, -seqaa) %>%
+  merge(df.segm %>% 
+          mutate(id.2 = id, seqaa.2 = seqaa) %>% 
+          select(-id, -seqaa),
+        allow.cartesian=T)
+```
+
+Compute distances
+
+```{r}
+CORES = 48
+
+data(PAM70)
+aln_mat <- PAM70
+GAP_OFFSET = round(max(abs(max(aln_mat)), abs(min(aln_mat)))) + 2
+
+aln_fun = function(a, b, similarity = T) {
+  if (similarity) {
+    return(pairwiseAlignment(AAString(a), AAString(b),
+                             substitutionMatrix = "BLOSUM62",
+                             scoreOnly=T))
+  } else {
+    s = pairwiseAlignment(AAString(a), AAString(b),
+                          substitutionMatrix = aln_mat,
+                          gapOpening = GAP_OFFSET, gapExtension = GAP_OFFSET,
+                          scoreOnly=T)
+    s1 = pairwiseAlignment(AAString(a), AAString(a),
+                           substitutionMatrix = aln_mat,
+                           gapOpening = GAP_OFFSET, gapExtension = GAP_OFFSET,
+                           scoreOnly=T)
+    s2 = pairwiseAlignment(AAString(b), AAString(b),
+                           substitutionMatrix = aln_mat,
+                           gapOpening = GAP_OFFSET, gapExtension = GAP_OFFSET,
+                           scoreOnly=T)
+    indels = abs(nchar(a) - nchar(b))
+    return(max(s1, s2) - s - GAP_OFFSET * indels)
+  }
+}
+
+df.segm.comb$score = with(df.segm.comb,
+                          mcmapply(function(a, b, r) aln_fun(a, b, 
+                                                             r == "full"),
+                              seqaa.1, seqaa.2, region,
+                              mc.cores = CORES))
+```
+
+Normalize distances
+
+```{r}
+df.segm.comb <- df.segm.comb %>%
+  group_by(region, segment, species, gene) %>%
+  mutate(score.se = sum(exp(score/10))) %>%
+  group_by(region, segment, species, gene, id.1) %>%
+  mutate(score.se1 = sum(exp(score/10)), score.m1 = score[which(id.2 == id.1)]) %>%
+  group_by(region, segment, species, gene, id.2) %>%
+  mutate(score.se2 = sum(exp(score/10)), score.m2 = score[which(id.2 == id.1)]) %>%
+  ungroup %>%
+  mutate(score.norm.m = score - pmax(score.m1, score.m2),
+         score.norm.s = log2((exp(score/10) + 1) * score.se / score.se1 / score.se2))
+```
+
+```{r fig.width=6, fig.height=5}
+ggplot(df.segm.comb %>% filter(region == "cdr1", segment == "V"), 
+       aes(x=gsub("TR", "", str_split_fixed(id.1, fixed("*"), 2)[,1]), 
+           y=gsub("TR", "", str_split_fixed(id.2, fixed("*"), 2)[,1]), 
+           fill = score.norm.m)) +
+  geom_tile() +
+  facet_wrap(species ~ gene, scales = "free") +
+  xlab("") + ylab("") +
+  scale_fill_gradientn("Score",
+                       colors=colorRampPalette(rev(brewer.pal(11, 'RdYlBu')))(32)) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+
+ggplot(df.segm.comb %>% filter(region == "cdr2", segment == "V"), 
+       aes(x=gsub("TR", "", str_split_fixed(id.1, fixed("*"), 2)[,1]), 
+           y=gsub("TR", "", str_split_fixed(id.2, fixed("*"), 2)[,1]), 
+           fill = score.norm.m)) +
+  geom_tile() +
+  facet_wrap(species ~ gene, scales = "free") +
+  xlab("") + ylab("") +
+  scale_fill_gradientn("Score",
+                       colors=colorRampPalette(rev(brewer.pal(11, 'RdYlBu')))(32)) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+
+ggplot(df.segm.comb %>% filter(region == "full", segment == "V"), 
+       aes(x=gsub("TR", "", str_split_fixed(id.1, fixed("*"), 2)[,1]), 
+           y=gsub("TR", "", str_split_fixed(id.2, fixed("*"), 2)[,1]), 
+           fill = score.norm.m)) +
+  geom_tile() +
+  facet_wrap(species ~ gene, scales = "free") +
+  xlab("") + ylab("") +
+  scale_fill_gradientn("Score",
+                       colors=colorRampPalette(rev(brewer.pal(11, 'RdYlBu')))(32)) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+
+ggplot(df.segm.comb %>% filter(segment == "J"), 
+       aes(x=gsub("TR", "", str_split_fixed(id.1, fixed("*"), 2)[,1]), 
+           y=gsub("TR", "", str_split_fixed(id.2, fixed("*"), 2)[,1]), 
+           fill = score.norm.m)) +
+  geom_tile() +
+  facet_wrap(species ~ gene, scales = "free") +
+  xlab("") + ylab("") +
+  scale_fill_gradientn("Score",
+                       colors=colorRampPalette(rev(brewer.pal(11, 'RdYlBu')))(32)) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+```
+
+```{r fig.width=6, fig.height=5}
+ggplot(df.segm.comb %>% filter(region == "full", segment == "V", 
+                               species != "MacacaMulatta") %>%
+            mutate(gene = paste(species, gene)), 
+       aes(x=gsub("TR", "", str_split_fixed(id.1, fixed("*"), 2)[,1]), 
+           y=gsub("TR", "", str_split_fixed(id.2, fixed("*"), 2)[,1]), 
+           fill = score.norm.s)) +
+  geom_tile() +
+  facet_wrap( ~ gene, scales = "free") +
+  xlab("") + ylab("") +
+  scale_fill_gradientn("Score",
+                       colors=colorRampPalette(rev(brewer.pal(11, 'RdYlBu')))(32)) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, family = "mono"),
+        axis.text.y = element_text(family = "mono"),
+        panel.grid.minor = element_blank(),
+        panel.grid.major = element_blank(),
+        strip.background = element_blank(),
+        panel.border = element_rect(colour = "black"))
+
+ggplot(df.segm.comb %>% filter(region == "full", segment == "V", 
+                               species != "MacacaMulatta") %>%
+            mutate(gene = paste(species, gene)), 
+       aes(x=gsub("TR", "", str_split_fixed(id.1, fixed("*"), 2)[,1]), 
+           y=gsub("TR", "", str_split_fixed(id.2, fixed("*"), 2)[,1]), 
+           fill = score.norm.m)) +
+  geom_tile() +
+  facet_wrap( ~ gene, scales = "free") +
+  xlab("") + ylab("") +
+  scale_fill_gradientn("Score",
+                       colors=colorRampPalette(rev(brewer.pal(11, 'RdYlBu')))(32)) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, family = "mono"),
+        axis.text.y = element_text(family = "mono"),
+        panel.grid.minor = element_blank(),
+        panel.grid.major = element_blank(),
+        strip.background = element_blank(),
+        panel.border = element_rect(colour = "black"))
+```
+
+```{r}
+df.out = df.segm.comb %>% mutate(segm.score = score.norm.m) %>% 
+  select(region, species, gene, segment, id.1, id.2, segm.score) %>%
+  dcast(species + gene + segment + id.1 + id.2 ~ region)
+
+colnames(df.out) = c("species", "gene", "segment", "id.1", "id.2",
+                     "cdr1.score", "cdr2.score", "segm.score")
+
+fwrite(df.out, "segm_score.txt", sep = "\t")
+```

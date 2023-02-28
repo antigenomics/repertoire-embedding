@@ -1,0 +1,49 @@
+---
+title: "Assets overview"
+author: "M.S."
+date: '2023-02-28'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(data.table)
+library(reshape2)
+```
+
+Alignment matrices
+
+```{r}
+library(Biostrings)
+
+data(BLOSUM45)
+data(BLOSUM50)
+data(BLOSUM62)
+data(BLOSUM80)
+data(BLOSUM100)
+data(PAM30)
+data(PAM40)
+data(PAM70)
+data(PAM120)
+data(PAM250)
+
+list(BLOSUM45 = BLOSUM45,
+     BLOSUM50 = BLOSUM50,
+     BLOSUM62 = BLOSUM62,
+     BLOSUM80 = BLOSUM80,
+     BLOSUM100 = BLOSUM100,
+     PAM30 = PAM30,
+     PAM40 = PAM40,
+     PAM70 = PAM70,
+     PAM120 = PAM120,
+     PAM250 = PAM250) %>%
+  lapply(function(x) reshape2::melt(x)) %>%
+  rbindlist(idcol = "mat") %>%
+  setnames(c("Var1", "Var2", "value"),
+           c("aa.x", "aa.y", "score")) %>%
+  fwrite("aln_matrices.txt", sep = "\t")
+```
+
+```{r}
+```
